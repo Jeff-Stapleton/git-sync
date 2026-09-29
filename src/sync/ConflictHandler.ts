@@ -54,7 +54,7 @@ export async function stageHandResolved(engine: GitEngine): Promise<string[]> {
   const still: string[] = [];
   for (const c of await engine.conflicts()) {
     const data = await engine.readWorkFile(c.path);
-    if (data === null || !hasConflictMarkers(Buffer.from(data).toString("utf8"))) {
+    if (data === null || !hasConflictMarkers(new TextDecoder().decode(data))) {
       await engine.stageResolved(c.path);
     } else {
       still.push(c.path);

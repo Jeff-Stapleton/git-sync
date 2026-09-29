@@ -1,4 +1,5 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
+import type { EngineChoice } from "./git/selectEngine";
 import type GitSyncPlugin from "./main";
 
 export interface GitSyncSettings {
@@ -8,6 +9,7 @@ export interface GitSyncSettings {
   deviceName: string;
   debounceSeconds: number;
   pullIntervalSeconds: number;
+  engine: EngineChoice;
 }
 
 export const DEFAULT_SETTINGS: GitSyncSettings = {
@@ -17,6 +19,7 @@ export const DEFAULT_SETTINGS: GitSyncSettings = {
   deviceName: "",
   debounceSeconds: 5,
   pullIntervalSeconds: 30,
+  engine: "auto",
 };
 
 export class GitSyncSettingTab extends PluginSettingTab {
@@ -70,6 +73,18 @@ export class GitSyncSettingTab extends PluginSettingTab {
 
     num("Push delay (seconds)", "Wait this long after your last edit before committing.", "debounceSeconds", 2);
     num("Pull interval (seconds)", "How often to check for remote changes.", "pullIntervalSeconds", 15);
+
+    new Setting(containerEl)
+      .setName("Git engine")
+      .setDesc("Auto uses the system git on desktop and a built-in JavaScript git on mobile.")
+      .addDropdown((d) =>
+        d.addOptions({ auto: "Auto", cli: "System git (desktop)", js: "Built-in (isomorphic-git)" })
+          .setValue(this.plugin.settings.engine)
+          .onChange(async (v) => {
+            this.plugin.settings.engine = v as EngineChoice;
+            await this.plugin.saveSettings();
+          }),
+      );
 
     new Setting(containerEl).setName("Sync now").addButton((b) =>
       b.setButtonText("Sync").setCta().onClick(() => void this.plugin.syncNow()),

@@ -1,6 +1,6 @@
-import { FileSystemAdapter, Notice, Plugin } from "obsidian";
-import { CliGitEngine } from "./git/CliGitEngine";
+import { Notice, Platform, Plugin } from "obsidian";
 import type { GitEngine } from "./git/GitEngine";
+import { selectEngine } from "./git/selectEngine";
 import { DEFAULT_SETTINGS, GitSyncSettings, GitSyncSettingTab } from "./settings";
 import { watchVault } from "./sync/ChangeWatcher";
 import { SyncManager, SyncState } from "./sync/SyncManager";
@@ -9,6 +9,8 @@ import { SyncScheduler } from "./sync/SyncScheduler";
 import { mergeGitignore } from "./util/ignore";
 
 const FOCUS_MIN_AGE_MS = 10_000;
+/** Phones: fewer wake-ups, less battery and data. */
+const MOBILE_MIN_PULL_S = 60;
 const TOKEN_FILE = ".obsidian/plugins/git-sync/data.json";
 
 export default class GitSyncPlugin extends Plugin {
@@ -41,6 +43,8 @@ export default class GitSyncPlugin extends Plugin {
       this.registerDomEvent(window, "focus", () => void this.scheduler?.requestSyncIfStale(FOCUS_MIN_AGE_MS));
       this.registerDomEvent(document, "visibilitychange", () => {
         if (document.visibilityState === "visible") void this.scheduler?.requestSyncIfStale(FOCUS_MIN_AGE_MS);
+        // Going to the background: push pending edits now, the OS may suspend us before the debounce fires.
+        else void this.scheduler?.requestSync();
       });
       this.registerDomEvent(window, "online", () => void this.scheduler?.requestSync());
       this.registerDomEvent(window, "offline", () => this.render({ kind: "offline" }));
@@ -72,7 +76,7 @@ export default class GitSyncPlugin extends Plugin {
       this.scheduler = new SyncScheduler({
         runSync: () => manager.sync(),
         debounceMs: () => this.settings.debounceSeconds * 1000,
-        pullIntervalMs: () => this.settings.pullIntervalSeconds * 1000,
+        pullIntervalMs: () => Math.max(this.settings.pullIntervalSeconds, Platform.isMobile ? MOBILE_MIN_PULL_S : 0) * 1000,
         isOnline: () => navigator.onLine,
         onOffline: () => this.render({ kind: "offline" }),
       });
@@ -84,21 +88,20 @@ export default class GitSyncPlugin extends Plugin {
 
   private async createEngine(): Promise<GitEngine> {
     const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof FileSystemAdapter)) {
-      throw new Error("Mobile engine (isomorphic-git) is not implemented yet.");
-    }
-    if (!(await CliGitEngine.isAvailable())) throw new Error("git binary not found on PATH.");
 
     // Write ignore rules first so the token file is never staged.
     const existing = (await adapter.exists(".gitignore")) ? await adapter.read(".gitignore") : "";
     const merged = mergeGitignore(existing);
     if (merged !== null) await adapter.write(".gitignore", merged);
 
-    const engine = new CliGitEngine(adapter.getBasePath());
+    const engine = await selectEngine(this.app, this.settings.engine);
+    console.debug(`[git-sync] using engine: ${engine.name}`);
+    const device = this.settings.deviceName || (Platform.isMobile ? "mobile" : "desktop");
     await engine.ensureRepo({
       remoteUrl: this.settings.remoteUrl,
       branch: this.settings.branch,
       token: this.settings.token,
+      author: { name: device, email: `${device.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}@obsidian-git-sync.local` },
     });
     await engine.untrack([TOKEN_FILE]); // in case an earlier setup already committed it
     return engine;

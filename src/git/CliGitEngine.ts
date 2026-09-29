@@ -62,6 +62,12 @@ export class CliGitEngine implements GitEngine {
     const remotes = (await this.exec(["remote"])).out.split("\n");
     if (remotes.includes("origin")) await this.exec(["remote", "set-url", "origin", cfg.remoteUrl]);
     else await this.exec(["remote", "add", "origin", cfg.remoteUrl]);
+    // Fresh machines often have no git identity, which makes every commit fail.
+    if (cfg.author) {
+      for (const [key, val] of [["user.name", cfg.author.name], ["user.email", cfg.author.email]]) {
+        if (!(await this.exec(["config", key], [0, 1])).out.trim()) await this.exec(["config", key, val]);
+      }
+    }
     // Keep merges non-interactive and history-preserving.
     await this.exec(["config", "pull.rebase", "false"]);
     await this.exec(["config", "core.quotepath", "false"]);

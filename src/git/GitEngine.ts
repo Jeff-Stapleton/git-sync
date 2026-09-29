@@ -20,6 +20,8 @@ export interface RepoConfig {
   remoteUrl: string;
   branch: string;
   token: string;
+  /** Commit identity for engines that don't read git config (defaults to a generic plugin identity). */
+  author?: { name: string; email: string };
 }
 
 export interface GitEngine {
