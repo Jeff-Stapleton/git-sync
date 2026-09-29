@@ -4,6 +4,7 @@ import { Mutex } from "../util/mutex";
 export type SyncState =
   | { kind: "idle"; lastSync?: number }
   | { kind: "syncing" }
+  | { kind: "offline" }
   | { kind: "conflict"; files: string[] }
   | { kind: "error"; message: string };
 

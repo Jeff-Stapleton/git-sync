@@ -24,6 +24,8 @@ export interface GitEngine {
   push(): Promise<PushResult>;
   abortMerge(): Promise<void>;
   conflictedFiles(): Promise<string[]>;
+  /** Stop tracking paths (keeps files on disk). Used so ignored secrets never get pushed. */
+  untrack(paths: string[]): Promise<void>;
   /** True if remote branch has commits we don't have (after fetch). */
   isBehind(): Promise<boolean>;
 }

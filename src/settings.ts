@@ -24,6 +24,11 @@ export class GitSyncSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
+  /** Apply connection/interval changes once, when the tab closes, not per keystroke. */
+  hide(): void {
+    void this.plugin.restart();
+  }
+
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
@@ -67,7 +72,7 @@ export class GitSyncSettingTab extends PluginSettingTab {
     num("Pull interval (seconds)", "How often to check for remote changes.", "pullIntervalSeconds", 15);
 
     new Setting(containerEl).setName("Sync now").addButton((b) =>
-      b.setButtonText("Sync").setCta().onClick(() => this.plugin.syncNow()),
+      b.setButtonText("Sync").setCta().onClick(() => void this.plugin.syncNow()),
     );
   }
 }

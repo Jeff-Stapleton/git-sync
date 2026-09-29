@@ -1,5 +1,5 @@
 import { execFileSync } from "child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -61,5 +61,20 @@ describe("CliGitEngine + SyncManager", () => {
     expect(s.kind).toBe("conflict");
     expect(readFileSync(join(b.dir, "n.md"), "utf8")).toContain("<<<<<<<");
     expect((await b.sync.sync()).kind).toBe("conflict"); // still held
+  });
+
+  it("untrack removes an already-committed secret from the index but keeps the file", async () => {
+    const a = device(remote, "a");
+    await a.ready;
+    mkdirSync(join(a.dir, ".obsidian/plugins/git-sync"), { recursive: true });
+    const secret = join(a.dir, ".obsidian/plugins/git-sync/data.json");
+    writeFileSync(secret, '{"token":"x"}');
+    await a.sync.sync();
+    expect(git(a.dir, "ls-files")).toContain("data.json");
+    writeFileSync(join(a.dir, ".gitignore"), ".obsidian/plugins/git-sync/data.json\n");
+    await a.engine.untrack([".obsidian/plugins/git-sync/data.json"]);
+    await a.sync.sync();
+    expect(git(a.dir, "ls-files")).not.toContain("data.json");
+    expect(readFileSync(secret, "utf8")).toContain("token");
   });
 });

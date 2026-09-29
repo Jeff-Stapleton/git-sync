@@ -62,6 +62,10 @@ export class CliGitEngine implements GitEngine {
     await this.exec(["config", "core.quotepath", "false"]);
   }
 
+  async untrack(paths: string[]): Promise<void> {
+    await this.exec(["rm", "-r", "--cached", "-q", "--ignore-unmatch", "--", ...paths]);
+  }
+
   async hasChanges(): Promise<boolean> {
     return (await this.exec(["status", "--porcelain"])).out.trim().length > 0;
   }
