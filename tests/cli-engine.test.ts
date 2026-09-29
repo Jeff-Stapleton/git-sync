@@ -1,5 +1,5 @@
 import { execFileSync } from "child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -76,5 +76,93 @@ describe("CliGitEngine + SyncManager", () => {
     await a.sync.sync();
     expect(git(a.dir, "ls-files")).not.toContain("data.json");
     expect(readFileSync(secret, "utf8")).toContain("token");
+  });
+
+  describe("conflict policies", () => {
+    async function diverge(setupA: (dir: string) => void, setupB: (dir: string) => void, base: (dir: string) => void) {
+      const a = device(remote, "a"), b = device(remote, "b");
+      await a.ready; await b.ready;
+      base(a.dir);
+      await a.sync.sync(); await b.sync.sync();
+      setupA(a.dir); setupB(b.dir);
+      await a.sync.sync();
+      return { a, b };
+    }
+    const png = (n: number) => Buffer.from([137, 80, 78, 71, 0, n]);
+
+    it("keeps local binary and saves the remote version as a conflict copy", async () => {
+      const { a, b } = await diverge(
+        (d) => writeFileSync(join(d, "p.png"), png(1)),
+        (d) => writeFileSync(join(d, "p.png"), png(2)),
+        (d) => writeFileSync(join(d, "p.png"), png(0)),
+      );
+      const s = await b.sync.sync();
+      expect(s, JSON.stringify(s)).toMatchObject({ kind: "idle" });
+      expect(readFileSync(join(b.dir, "p.png"))).toEqual(png(2));
+      const copy = readdirSync(b.dir).find((f) => f.startsWith("p.conflict-remote-"))!;
+      expect(readFileSync(join(b.dir, copy))).toEqual(png(1));
+      await a.sync.sync(); // copy reaches the other device
+      expect(readdirSync(a.dir).some((f) => f.startsWith("p.conflict-remote-"))).toBe(true);
+    });
+
+    it("delete vs modify keeps the modified file", async () => {
+      const { b } = await diverge(
+        (d) => rmSync(join(d, "n.md")),
+        (d) => writeFileSync(join(d, "n.md"), "edited on b\n"),
+        (d) => writeFileSync(join(d, "n.md"), "base\n"),
+      );
+      const s = await b.sync.sync();
+      expect(s, JSON.stringify(s)).toMatchObject({ kind: "idle" });
+      expect(readFileSync(join(b.dir, "n.md"), "utf8")).toBe("edited on b\n");
+    });
+
+    it("remote wins for .obsidian config conflicts", async () => {
+      const { b } = await diverge(
+        (d) => writeFileSync(join(d, ".obsidian/app.json"), '{"a":1}\n'),
+        (d) => writeFileSync(join(d, ".obsidian/app.json"), '{"b":2}\n'),
+        (d) => { mkdirSync(join(d, ".obsidian")); writeFileSync(join(d, ".obsidian/app.json"), "{}\n"); },
+      );
+      expect(await b.sync.sync()).toMatchObject({ kind: "idle" });
+      expect(readFileSync(join(b.dir, ".obsidian/app.json"), "utf8")).toBe('{"a":1}\n');
+    });
+
+    it("finishes the merge once the user removes the markers by hand", async () => {
+      const { a, b } = await diverge(
+        (d) => writeFileSync(join(d, "n.md"), "from a\n"),
+        (d) => writeFileSync(join(d, "n.md"), "from b\n"),
+        (d) => writeFileSync(join(d, "n.md"), "base\n"),
+      );
+      expect(await b.sync.sync()).toMatchObject({ kind: "conflict", files: ["n.md"] });
+      writeFileSync(join(b.dir, "n.md"), "from a and b\n");
+      expect(await b.sync.sync()).toMatchObject({ kind: "idle" });
+      await a.sync.sync();
+      expect(readFileSync(join(a.dir, "n.md"), "utf8")).toBe("from a and b\n");
+      expect(git(b.dir, "status", "--porcelain").trim()).toBe("");
+    });
+
+    it("resolve('ours') that equals HEAD still concludes the merge and pushes", async () => {
+      const { a, b } = await diverge(
+        (d) => writeFileSync(join(d, "n.md"), "from a\n"),
+        (d) => writeFileSync(join(d, "n.md"), "from b\n"),
+        (d) => writeFileSync(join(d, "n.md"), "base\n"),
+      );
+      await b.sync.sync();
+      expect(await b.sync.resolve("n.md", "ours")).toEqual([]);
+      expect(await b.sync.sync()).toMatchObject({ kind: "idle" });
+      await a.sync.sync();
+      expect(readFileSync(join(a.dir, "n.md"), "utf8")).toBe("from b\n");
+    });
+
+    it("resolve('theirs') takes the remote content", async () => {
+      const { b } = await diverge(
+        (d) => writeFileSync(join(d, "n.md"), "from a\n"),
+        (d) => writeFileSync(join(d, "n.md"), "from b\n"),
+        (d) => writeFileSync(join(d, "n.md"), "base\n"),
+      );
+      await b.sync.sync();
+      await b.sync.resolve("n.md", "theirs");
+      expect(await b.sync.sync()).toMatchObject({ kind: "idle" });
+      expect(readFileSync(join(b.dir, "n.md"), "utf8")).toBe("from a\n");
+    });
   });
 });

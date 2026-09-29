@@ -1,5 +1,8 @@
 import { spawn } from "child_process";
-import { GitEngine, MergeResult, PushResult, RepoConfig } from "./GitEngine";
+import { mkdir, readFile, writeFile } from "fs/promises";
+import { dirname, join } from "path";
+import { isBinary } from "../util/markers";
+import { ConflictInfo, GitEngine, MergeResult, PushResult, RepoConfig, Side } from "./GitEngine";
 
 export class GitCommandError extends Error {
   constructor(public args: string[], public code: number | null, public stderr: string) {
@@ -26,16 +29,18 @@ export class CliGitEngine implements GitEngine {
     return env;
   }
 
-  private exec(args: string[], okCodes: number[] = [0]): Promise<{ code: number; out: string; err: string }> {
+  private exec(args: string[], okCodes: number[] = [0]): Promise<{ code: number; out: string; err: string; buf: Buffer }> {
     return new Promise((resolve, reject) => {
       const p = spawn(this.gitPath, args, { cwd: this.cwd, env: this.env() });
-      let out = "";
+      const chunks: Buffer[] = [];
       let err = "";
-      p.stdout.on("data", (d) => (out += d));
+      p.stdout.on("data", (d: Buffer) => chunks.push(d));
       p.stderr.on("data", (d) => (err += d));
       p.on("error", reject);
       p.on("close", (code) => {
-        if (code !== null && okCodes.includes(code)) resolve({ code, out, err });
+        const buf = Buffer.concat(chunks);
+        const out = buf.toString("utf8");
+        if (code !== null && okCodes.includes(code)) resolve({ code, out, err, buf });
         else reject(new GitCommandError(args, code, err || out));
       });
     });
@@ -64,6 +69,80 @@ export class CliGitEngine implements GitEngine {
 
   async untrack(paths: string[]): Promise<void> {
     await this.exec(["rm", "-r", "--cached", "-q", "--ignore-unmatch", "--", ...paths]);
+  }
+
+  /** Parses `ls-files -u`: which stages (1 base, 2 ours, 3 theirs) exist for each unmerged path. */
+  private async unmergedStages(): Promise<Map<string, Set<number>>> {
+    const r = await this.exec(["ls-files", "-u", "-z"]);
+    const map = new Map<string, Set<number>>();
+    for (const rec of r.out.split("\0").filter(Boolean)) {
+      const tab = rec.indexOf("\t");
+      const stage = Number(rec.slice(0, tab).split(" ")[2]);
+      const path = rec.slice(tab + 1);
+      if (!map.has(path)) map.set(path, new Set());
+      map.get(path)!.add(stage);
+    }
+    return map;
+  }
+
+  async conflicts(): Promise<ConflictInfo[]> {
+    const out: ConflictInfo[] = [];
+    for (const [path, stages] of await this.unmergedStages()) {
+      const ours = stages.has(2), theirs = stages.has(3);
+      if (ours && theirs) {
+        const [a, b] = await Promise.all([this.readSide(path, "ours"), this.readSide(path, "theirs")]);
+        out.push({
+          path,
+          kind: stages.has(1) ? "both-modified" : "both-added",
+          binary: (a !== null && isBinary(a)) || (b !== null && isBinary(b)),
+        });
+      } else {
+        out.push({ path, kind: ours ? "deleted-by-them" : "deleted-by-us", binary: false });
+      }
+    }
+    return out;
+  }
+
+  async takeSide(path: string, side: Side): Promise<void> {
+    const stages = (await this.unmergedStages()).get(path);
+    if (stages?.has(side === "ours" ? 2 : 3)) {
+      await this.exec(["checkout", `--${side}`, "--", path]);
+      await this.exec(["add", "--", path]);
+    } else {
+      await this.exec(["rm", "-q", "-f", "--", path]); // that side deleted it
+    }
+  }
+
+  async stageResolved(path: string): Promise<void> {
+    await this.exec(["add", "-A", "--", path]);
+  }
+
+  async readSide(path: string, side: Side): Promise<Uint8Array | null> {
+    const r = await this.exec(["show", `:${side === "ours" ? 2 : 3}:${path}`], [0, 128]);
+    return r.code === 0 ? r.buf : null;
+  }
+
+  async readWorkFile(path: string): Promise<Uint8Array | null> {
+    try {
+      return await readFile(join(this.cwd, path));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw e;
+    }
+  }
+
+  async writeWorkFile(path: string, data: Uint8Array): Promise<void> {
+    const full = join(this.cwd, path);
+    await mkdir(dirname(full), { recursive: true });
+    await writeFile(full, data);
+  }
+
+  async finishMerge(): Promise<boolean> {
+    const merging = await this.exec(["rev-parse", "-q", "--verify", "MERGE_HEAD"], [0, 1]);
+    if (merging.code !== 0) return false;
+    if ((await this.conflictedFiles()).length > 0) return false;
+    await this.exec(["commit", "--no-edit"]);
+    return true;
   }
 
   async hasChanges(): Promise<boolean> {

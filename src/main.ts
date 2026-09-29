@@ -4,6 +4,7 @@ import type { GitEngine } from "./git/GitEngine";
 import { DEFAULT_SETTINGS, GitSyncSettings, GitSyncSettingTab } from "./settings";
 import { watchVault } from "./sync/ChangeWatcher";
 import { SyncManager, SyncState } from "./sync/SyncManager";
+import { ConflictModal } from "./ui/ConflictModal";
 import { SyncScheduler } from "./sync/SyncScheduler";
 import { mergeGitignore } from "./util/ignore";
 
@@ -13,6 +14,7 @@ const TOKEN_FILE = ".obsidian/plugins/git-sync/data.json";
 export default class GitSyncPlugin extends Plugin {
   settings!: GitSyncSettings;
   private scheduler?: SyncScheduler;
+  private manager?: SyncManager;
   private statusEl?: HTMLElement;
   private state: SyncState = { kind: "idle" };
   private lastSync?: number;
@@ -23,10 +25,11 @@ export default class GitSyncPlugin extends Plugin {
     this.addSettingTab(new GitSyncSettingTab(this.app, this));
     this.statusEl = this.addStatusBarItem();
     this.statusEl.addClass("git-sync-status");
-    this.statusEl.addEventListener("click", () => void this.syncNow());
+    this.statusEl.addEventListener("click", () => (this.state.kind === "conflict" ? this.openConflicts() : void this.syncNow()));
     this.render({ kind: "idle" });
 
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.syncNow() });
+    this.addCommand({ id: "resolve-conflicts", name: "Resolve conflicts", callback: () => this.openConflicts() });
     this.addRibbonIcon("refresh-cw", "Git Sync: sync now", () => void this.syncNow());
 
     // Keep "synced 12s ago" fresh.
@@ -57,13 +60,15 @@ export default class GitSyncPlugin extends Plugin {
   async restart() {
     this.scheduler?.stop();
     this.scheduler = undefined;
+    this.manager = undefined;
     if (!this.settings.remoteUrl) {
       this.render({ kind: "idle" });
       return;
     }
     try {
       const engine = await this.createEngine();
-      const manager = new SyncManager(engine, () => this.settings.deviceName, (s) => this.render(s));
+      const manager = new SyncManager(engine, () => this.settings.deviceName, (s) => this.onState(s), (m) => new Notice(`Git Sync: ${m}`, 8000));
+      this.manager = manager;
       this.scheduler = new SyncScheduler({
         runSync: () => manager.sync(),
         debounceMs: () => this.settings.debounceSeconds * 1000,
@@ -107,6 +112,19 @@ export default class GitSyncPlugin extends Plugin {
     if (!this.scheduler) await this.restart();
     await this.scheduler?.requestSync();
     if (this.state.kind === "error") new Notice(`Git Sync: ${this.state.message}`);
+  }
+
+  private openConflicts() {
+    if (!this.manager) return void new Notice("Git Sync: not running. Set the origin URL in settings.");
+    new ConflictModal(this.app, this.manager, () => void this.scheduler?.requestSync()).open();
+  }
+
+  /** Notify once when a new set of conflicts appears, then render. */
+  private onState(s: SyncState) {
+    if (s.kind === "conflict" && this.state.kind !== "conflict") {
+      new Notice(`Git Sync: ${s.files.length} note(s) have merge conflicts. Click the status bar to resolve.`, 10000);
+    }
+    this.render(s);
   }
 
   private fail(e: unknown) {
