@@ -1,9 +1,13 @@
-/** Lines every synced vault should ignore. The plugin's data.json holds the access token. */
+/**
+ * Lines every synced vault should ignore. The plugin's own folder is excluded whole: data.json can hold
+ * the access token on older Obsidian, main.js would conflict between devices on different versions, and a
+ * symlinked dev install would be committed as a link to an absolute path. (No trailing slash, so a symlink matches.)
+ */
 export const DEFAULT_IGNORE_LINES = [
   ".obsidian/workspace.json",
   ".obsidian/workspace-mobile.json",
   ".obsidian/cache",
-  ".obsidian/plugins/git-sync/data.json",
+  ".obsidian/plugins/git-sync",
   ".trash/",
   ".DS_Store",
 ];
@@ -26,7 +30,8 @@ export function isIgnoredPath(path: string): boolean {
     p.startsWith(".trash/") ||
     /^\.obsidian\/workspace(-mobile)?\.json$/.test(p) ||
     p.startsWith(".obsidian/cache") ||
-    p === ".obsidian/plugins/git-sync/data.json" ||
+    p === ".obsidian/plugins/git-sync" ||
+    p.startsWith(".obsidian/plugins/git-sync/") ||
     p.endsWith(".DS_Store")
   );
 }

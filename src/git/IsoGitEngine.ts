@@ -1,7 +1,7 @@
 import git, { HttpClient, TREE } from "isomorphic-git";
 import { isBinary } from "../util/markers";
 import { mergeText } from "../util/textMerge";
-import { ConflictInfo, GitEngine, MergeResult, PushResult, RepoConfig, Side } from "./GitEngine";
+import { ConflictInfo, FileGuard, GitEngine, MergeResult, PushResult, RemoteRelation, RepoConfig, Side } from "./GitEngine";
 
 /**
  * Pure-JS engine for platforms without a git binary (Obsidian mobile).
@@ -33,6 +33,7 @@ const parentOf = (p: string) => p.slice(0, Math.max(0, p.lastIndexOf("/")));
 export class IsoGitEngine implements GitEngine {
   readonly name = "isomorphic-git";
   private cfg?: RepoConfig;
+  private guard?: FileGuard;
   private fs: any;
   private http: HttpClient;
   private dir: string;
@@ -59,8 +60,8 @@ export class IsoGitEngine implements GitEngine {
   private abs(rel: string) {
     return (this.dir === "/" ? "" : this.dir.replace(/\/$/, "")) + "/" + rel;
   }
-  private headers(): Record<string, string> {
-    const t = this.cfg?.token;
+  private headers(token = this.cfg?.token): Record<string, string> {
+    const t = token;
     return t ? { Authorization: "Basic " + btoa(`x-access-token:${t}`) } : {};
   }
 
@@ -124,7 +125,17 @@ export class IsoGitEngine implements GitEngine {
     const paths = [...this.racy];
     this.racy.clear();
     const present: string[] = [];
-    for (const p of paths) if ((await this.readWork(p)) !== null) present.push(p);
+    for (const p of paths) {
+      let size: number;
+      try {
+        size = (await this.fs.promises.stat(this.abs(p))).size;
+      } catch {
+        continue; // removed since
+      }
+      // Re-adding stages the file, so it must not bypass the large-file guard.
+      if (this.guard && size >= this.guard.excludeBytes) continue;
+      present.push(p);
+    }
     await this.addPaths(present); // re-registers any still within the window
   }
 
@@ -196,10 +207,47 @@ export class IsoGitEngine implements GitEngine {
     await git.addRemote({ ...this.ctx, remote: "origin", url: cfg.remoteUrl, force: true });
   }
 
+  async testConnection(cfg: RepoConfig): Promise<{ branchExists: boolean }> {
+    const info = await git.getRemoteInfo({ http: this.http, url: cfg.remoteUrl, headers: this.headers(cfg.token) });
+    return { branchExists: Boolean(info.refs?.heads?.[cfg.branch]) };
+  }
+
+  async trackedFiles(): Promise<string[]> {
+    return (await this.headOid()) ? git.listFiles({ ...this.ctx, ref: "HEAD" }) : [];
+  }
+
+  async relationToRemote(): Promise<RemoteRelation> {
+    const remote = await this.remoteOid();
+    if (!remote) return "no-remote";
+    const head = await this.headOid();
+    if (!head) return "related";
+    return (await git.findMergeBase({ ...this.ctx, oids: [head, remote] })).length ? "related" : "unrelated";
+  }
+
   async hasChanges(): Promise<boolean> {
     await this.refreshRacy();
     const rows = await git.statusMatrix({ ...this.ctx });
     return rows.some(([, h, w, s]) => !(h === 1 && w === 1 && s === 1));
+  }
+
+  setFileGuard(guard: FileGuard | undefined): void {
+    this.guard = guard;
+  }
+
+  async excludeLocally(path: string): Promise<void> {
+    const rel = ".git/info/exclude";
+    const line = "/" + path.replace(/([*?[\\])/g, "\\$1");
+    let current = "";
+    try {
+      current = await this.fs.promises.readFile(this.abs(rel), "utf8");
+    } catch (e: any) {
+      if (e?.code !== "ENOENT") throw e;
+      await this.ensureDir(".git/info");
+    }
+    if (!current.split("\n").includes(line)) {
+      const sep = current && !current.endsWith("\n") ? "\n" : "";
+      await this.fs.promises.writeFile(this.abs(rel), current + sep + line + "\n");
+    }
   }
 
   async commitAll(message: string): Promise<boolean> {
@@ -209,9 +257,21 @@ export class IsoGitEngine implements GitEngine {
     let changed = 0;
     for (const [file, h, w, s] of rows) {
       if (h === 1 && w === 1 && s === 1) continue;
+      if (w === 0) {
+        await git.remove({ ...this.ctx, filepath: file });
+      } else {
+        if (this.guard) {
+          const size = (await this.fs.promises.stat(this.abs(file))).size as number;
+          if (size >= this.guard.excludeBytes) {
+            await this.excludeLocally(file);
+            this.guard.onExclude(file, size);
+            continue;
+          }
+          if (size >= this.guard.warnBytes) this.guard.onWarn(file, size);
+        }
+        toAdd.push(file);
+      }
       changed++;
-      if (w === 0) await git.remove({ ...this.ctx, filepath: file });
-      else toAdd.push(file);
     }
     if (!changed) return false;
     await this.addPaths(toAdd);

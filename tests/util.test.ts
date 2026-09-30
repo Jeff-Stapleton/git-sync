@@ -43,6 +43,9 @@ describe("backoffDelay", () => {
 describe("ignore", () => {
   it("never syncs the token file or workspace state", () => {
     expect(isIgnoredPath(".obsidian/plugins/git-sync/data.json")).toBe(true);
+    expect(isIgnoredPath(".obsidian/plugins/git-sync/main.js")).toBe(true); // dev rebuilds must not trigger syncs
+    expect(isIgnoredPath(".obsidian/plugins/git-sync")).toBe(true); // the symlink itself
+    expect(isIgnoredPath(".obsidian/plugins/other-plugin/data.json")).toBe(false);
     expect(isIgnoredPath(".obsidian/workspace.json")).toBe(true);
     expect(isIgnoredPath(".git/index")).toBe(true);
     expect(isIgnoredPath("notes/a.md")).toBe(false);

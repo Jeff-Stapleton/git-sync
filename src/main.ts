@@ -1,16 +1,22 @@
-import { Notice, Platform, Plugin } from "obsidian";
+import { Notice, Platform, Plugin, SecretStorage } from "obsidian";
 import type { GitEngine } from "./git/GitEngine";
 import { selectEngine } from "./git/selectEngine";
 import { DEFAULT_SETTINGS, GitSyncSettings, GitSyncSettingTab } from "./settings";
 import { watchVault } from "./sync/ChangeWatcher";
 import { SyncManager, SyncState } from "./sync/SyncManager";
+import { ConfirmModal } from "./ui/ConfirmModal";
 import { ConflictModal } from "./ui/ConflictModal";
+import { LogModal } from "./ui/LogModal";
 import { SyncScheduler } from "./sync/SyncScheduler";
+import { friendlyError } from "./util/errors";
 import { mergeGitignore } from "./util/ignore";
+import { SyncLog } from "./util/log";
+import { TokenStore } from "./util/tokenStore";
 
 const FOCUS_MIN_AGE_MS = 10_000;
 /** Phones: fewer wake-ups, less battery and data. */
 const MOBILE_MIN_PULL_S = 60;
+const MB = 1024 * 1024;
 const TOKEN_FILE = ".obsidian/plugins/git-sync/data.json";
 
 export default class GitSyncPlugin extends Plugin {
@@ -21,9 +27,14 @@ export default class GitSyncPlugin extends Plugin {
   private state: SyncState = { kind: "idle" };
   private lastSync?: number;
   private lastError?: string;
+  private tokens!: TokenStore;
+  private log = new SyncLog(300, () => this.getToken());
 
   async onload() {
     this.settings = { ...DEFAULT_SETTINGS, ...(await this.loadData()) };
+    // Obsidian 1.11.4+ has per-device secret storage; older versions fall back to data.json.
+    this.tokens = new TokenStore(this.app.secretStorage as SecretStorage | undefined, this.settings);
+    if (this.tokens.migrate()) await this.saveSettings();
     this.addSettingTab(new GitSyncSettingTab(this.app, this));
     this.statusEl = this.addStatusBarItem();
     this.statusEl.addClass("git-sync-status");
@@ -32,6 +43,8 @@ export default class GitSyncPlugin extends Plugin {
 
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.syncNow() });
     this.addCommand({ id: "resolve-conflicts", name: "Resolve conflicts", callback: () => this.openConflicts() });
+    this.addCommand({ id: "show-log", name: "Show sync log", callback: () => new LogModal(this.app, this.log).open() });
+    this.addCommand({ id: "open-repo", name: "Open repository in browser", callback: () => this.openRepo() });
     this.addRibbonIcon("refresh-cw", "Git Sync: sync now", () => void this.syncNow());
 
     // Keep "synced 12s ago" fresh.
@@ -60,6 +73,14 @@ export default class GitSyncPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
+  getToken(): string {
+    return this.tokens.get();
+  }
+
+  async setToken(token: string) {
+    if (this.tokens.set(token)) await this.saveSettings();
+  }
+
   /** (Re)build engine + scheduler from current settings. Called at startup and when settings close. */
   async restart() {
     this.scheduler?.stop();
@@ -71,7 +92,19 @@ export default class GitSyncPlugin extends Plugin {
     }
     try {
       const engine = await this.createEngine();
-      const manager = new SyncManager(engine, () => this.settings.deviceName, (s) => this.onState(s), (m) => new Notice(`Git Sync: ${m}`, 8000));
+      const manager = new SyncManager(engine, () => this.settings.deviceName, (s) => this.onState(s), (m) => new Notice(`Git Sync: ${m}`, 8000), {
+        log: this.log,
+        token: () => this.getToken(),
+        warnBytes: this.settings.largeFileWarnMB * MB,
+        confirmUnrelated: () =>
+          ConfirmModal.ask(
+            this.app,
+            "Combine this vault with the repository?",
+            `This vault already has notes, and ${this.settings.remoteUrl} has different notes with no shared history. ` +
+              "Combining keeps both sets of notes and pushes the result. If you're not sure, cancel and point the plugin at an empty repository.",
+            "Combine",
+          ),
+      });
       this.manager = manager;
       this.scheduler = new SyncScheduler({
         runSync: () => manager.sync(),
@@ -95,12 +128,12 @@ export default class GitSyncPlugin extends Plugin {
     if (merged !== null) await adapter.write(".gitignore", merged);
 
     const engine = await selectEngine(this.app, this.settings.engine);
-    console.debug(`[git-sync] using engine: ${engine.name}`);
+    this.log.info(`Using engine: ${engine.name}`);
     const device = this.settings.deviceName || (Platform.isMobile ? "mobile" : "desktop");
     await engine.ensureRepo({
       remoteUrl: this.settings.remoteUrl,
       branch: this.settings.branch,
-      token: this.settings.token,
+      token: this.getToken(),
       author: { name: device, email: `${device.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}@obsidian-git-sync.local` },
     });
     await engine.untrack([TOKEN_FILE]); // in case an earlier setup already committed it
@@ -112,7 +145,8 @@ export default class GitSyncPlugin extends Plugin {
       new Notice("Git Sync: set the origin URL in settings first.");
       return;
     }
-    if (!this.scheduler) await this.restart();
+    // Paused = waiting on a decision; a fresh manager asks again.
+    if (!this.scheduler || this.state.kind === "paused") await this.restart();
     await this.scheduler?.requestSync();
     if (this.state.kind === "error") new Notice(`Git Sync: ${this.state.message}`);
   }
@@ -130,8 +164,33 @@ export default class GitSyncPlugin extends Plugin {
     this.render(s);
   }
 
+  async testConnection() {
+    const { remoteUrl, branch } = this.settings;
+    const token = this.getToken();
+    if (!remoteUrl) return void new Notice("Git Sync: set the origin URL first.");
+    try {
+      const engine = await selectEngine(this.app, this.settings.engine);
+      const r = await engine.testConnection({ remoteUrl, branch, token });
+      new Notice(
+        r.branchExists
+          ? `Git Sync: connected. Branch "${branch}" found.`
+          : `Git Sync: connected. Branch "${branch}" doesn't exist yet; the first sync will create it.`,
+      );
+    } catch (e) {
+      new Notice(`Git Sync: connection failed. ${friendlyError(e, token)}`, 10000);
+    }
+  }
+
+  private openRepo() {
+    // https://host/owner/repo(.git) -> https://host/owner/repo
+    const url = this.settings.remoteUrl.replace(/\/?(\.git)?\/?$/, "");
+    if (!/^https?:\/\//.test(url)) return void new Notice("Git Sync: set an https origin URL first.");
+    window.open(url);
+  }
+
   private fail(e: unknown) {
-    const message = e instanceof Error ? e.message : String(e);
+    const message = friendlyError(e, this.getToken());
+    this.log.error(message);
     this.render({ kind: "error", message });
     new Notice(`Git Sync: ${message}`);
   }
@@ -149,6 +208,7 @@ export default class GitSyncPlugin extends Plugin {
       case "syncing": el.setText("⟳ syncing…"); break;
       case "offline": el.setText("☁✕ offline"); break;
       case "conflict": el.setText(`⚠ ${s.files.length} conflict(s)`); el.title = s.files.join("\n"); break;
+      case "paused": el.setText("⏸ sync paused"); el.title = `${s.reason} Click to review.`; break;
       case "error": el.setText("⚠ sync error (retrying)"); el.title = this.lastError ?? s.message; break;
     }
   }

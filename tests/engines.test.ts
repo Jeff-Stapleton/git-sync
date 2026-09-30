@@ -10,7 +10,7 @@ import type { GitEngine } from "../src/git/GitEngine";
 import { IsoGitEngine } from "../src/git/IsoGitEngine";
 import { createObsidianHttp, RequestUrlFn } from "../src/git/obsidianHttp";
 import { createObsidianFs } from "../src/git/obsidianFs";
-import { SyncManager } from "../src/sync/SyncManager";
+import { SyncExtras, SyncManager } from "../src/sync/SyncManager";
 import { startRemote, TestRemote } from "./helpers/gitHttpServer";
 import { nodeAdapter } from "./helpers/nodeAdapter";
 
@@ -42,7 +42,7 @@ describe.each<Kind>(["cli", "iso", "iso-obsidian"])("engine: %s", (kind) => {
   beforeEach(async () => { remote = await startRemote(); });
   afterEach(async () => { await remote.close(); });
 
-  function device(name: string, opts: { dir?: string; token?: string } = {}) {
+  function device(name: string, opts: { dir?: string; token?: string; extras?: SyncExtras; notes?: string[] } = {}) {
     const dir = opts.dir ?? mkdtempSync(join(tmpdir(), `vault-${name}-`));
     const engine = makeEngine(kind, dir, name);
     return {
@@ -51,7 +51,7 @@ describe.each<Kind>(["cli", "iso", "iso-obsidian"])("engine: %s", (kind) => {
         remoteUrl: remote.url, branch: "main", token: opts.token ?? remote.token,
         author: { name, email: `${name}@test` },
       }),
-      sync: new SyncManager(engine, () => name),
+      sync: new SyncManager(engine, () => name, () => {}, (m) => opts.notes?.push(m), opts.extras),
     };
   }
   const read = (d: { dir: string }, f: string) => readFileSync(join(d.dir, f), "utf8");
@@ -95,7 +95,7 @@ describe.each<Kind>(["cli", "iso", "iso-obsidian"])("engine: %s", (kind) => {
   });
 
   it("first sync of a fresh vault with its own initial commit merges unrelated histories", async () => {
-    const a = device("a"), b = device("b");
+    const a = device("a"), b = device("b", { extras: { confirmUnrelated: async () => true } });
     await a.ready; await b.ready;
     writeFileSync(join(a.dir, "remote.md"), "on remote\n");
     writeFileSync(join(a.dir, ".gitignore"), ".DS_Store\n");
@@ -186,6 +186,113 @@ describe.each<Kind>(["cli", "iso", "iso-obsidian"])("engine: %s", (kind) => {
     await a.sync.sync();
     expect(git(a.dir, "ls-files")).not.toContain("data.json");
     expect(readFileSync(secret, "utf8")).toContain("token");
+  });
+
+  describe("connection, first sync and large files", () => {
+    it("testConnection: reports branch state and rejects a bad token", async () => {
+      const a = device("a");
+      await a.ready;
+      const cfg = { remoteUrl: remote.url, branch: "main", token: remote.token };
+      expect(await a.engine.testConnection(cfg)).toEqual({ branchExists: false }); // empty remote
+      writeFileSync(join(a.dir, "n.md"), "x\n");
+      await a.sync.sync();
+      expect(await a.engine.testConnection(cfg)).toEqual({ branchExists: true });
+      expect(await a.engine.testConnection({ ...cfg, branch: "other" })).toEqual({ branchExists: false });
+      await expect(a.engine.testConnection({ ...cfg, token: "wrong" })).rejects.toThrow();
+    });
+
+    it("trackedFiles lists committed paths only", async () => {
+      const a = device("a");
+      await a.ready;
+      expect(await a.engine.trackedFiles()).toEqual([]); // unborn
+      mkdirSync(join(a.dir, "d"));
+      writeFileSync(join(a.dir, "d/n.md"), "x\n");
+      await a.sync.sync();
+      writeFileSync(join(a.dir, "uncommitted.md"), "y\n");
+      expect(await a.engine.trackedFiles()).toEqual(["d/n.md"]);
+    });
+
+    async function twoVaultsWithNotes(bExtras: SyncExtras) {
+      const a = device("a"), b = device("b", { extras: bExtras });
+      await a.ready; await b.ready;
+      writeFileSync(join(a.dir, "from-a.md"), "a\n");
+      await a.sync.sync();
+      writeFileSync(join(b.dir, "from-b.md"), "b\n"); // b has its own notes and no shared history
+      return { a, b };
+    }
+
+    it("declined: pauses, does not push, and does not re-prompt on later syncs", async () => {
+      let asked = 0;
+      const { a, b } = await twoVaultsWithNotes({ confirmUnrelated: async () => (asked++, false) });
+      expect(await b.sync.sync()).toMatchObject({ kind: "paused" });
+      expect(await b.sync.sync()).toMatchObject({ kind: "paused" });
+      expect(asked).toBe(1);
+      await a.sync.sync();
+      expect(readdirSync(a.dir)).not.toContain("from-b.md");
+      expect(readdirSync(b.dir)).not.toContain("from-a.md");
+    });
+
+    it("confirmed: combines both note collections", async () => {
+      const { a, b } = await twoVaultsWithNotes({ confirmUnrelated: async () => true });
+      expect(await b.sync.sync()).toMatchObject({ kind: "idle" });
+      await a.sync.sync();
+      for (const d of [a, b]) {
+        expect(read(d, "from-a.md")).toBe("a\n");
+        expect(read(d, "from-b.md")).toBe("b\n");
+      }
+    });
+
+    it("a new device with only config files adopts the remote without asking", async () => {
+      const a = device("a");
+      await a.ready;
+      writeFileSync(join(a.dir, "from-a.md"), "a\n");
+      await a.sync.sync();
+      let asked = 0;
+      const b = device("b", { extras: { confirmUnrelated: async () => (asked++, false) } });
+      await b.ready;
+      mkdirSync(join(b.dir, ".obsidian"));
+      writeFileSync(join(b.dir, ".obsidian/app.json"), "{}\n");
+      writeFileSync(join(b.dir, ".gitignore"), ".DS_Store\n");
+      expect(await b.sync.sync()).toMatchObject({ kind: "idle" });
+      expect(asked).toBe(0);
+      expect(read(b, "from-a.md")).toBe("a\n");
+    });
+
+    it("large files: warns once but syncs; over the host limit is kept out of sync", async () => {
+      const notes: string[] = [];
+      const a = device("a", { notes, extras: { warnBytes: 20, excludeBytes: 100 } }), b = device("b");
+      await a.ready; await b.ready;
+      writeFileSync(join(a.dir, "small.md"), "tiny\n");
+      writeFileSync(join(a.dir, "warn.md"), "w".repeat(50));
+      writeFileSync(join(a.dir, "huge.bin"), "h".repeat(500));
+      expect(await a.sync.sync()).toMatchObject({ kind: "idle" });
+      await a.sync.sync(); // second cycle must not repeat notices or create empty commits
+      const commits = git(a.dir, "rev-list", "--count", "HEAD").trim();
+      await a.sync.sync();
+      expect(git(a.dir, "rev-list", "--count", "HEAD").trim()).toBe(commits);
+      expect(notes.filter((n) => n.includes("warn.md"))).toHaveLength(1);
+      expect(notes.filter((n) => n.includes("huge.bin"))).toHaveLength(1);
+      await b.sync.sync();
+      expect(readdirSync(b.dir)).toEqual(expect.arrayContaining(["small.md", "warn.md"]));
+      expect(readdirSync(b.dir)).not.toContain("huge.bin");
+      expect(readdirSync(a.dir)).toContain("huge.bin"); // still on disk locally
+    });
+
+    it("large files: a tracked file that later grows past the limit stops syncing but keeps its old remote version", async () => {
+      const notes: string[] = [];
+      const a = device("a", { notes, extras: { warnBytes: 1000, excludeBytes: 100 } }), b = device("b");
+      await a.ready; await b.ready;
+      writeFileSync(join(a.dir, "grow.md"), "small\n");
+      await a.sync.sync();
+      writeFileSync(join(a.dir, "grow.md"), "g".repeat(500));
+      writeFileSync(join(a.dir, "other.md"), "still syncs\n");
+      expect(await a.sync.sync()).toMatchObject({ kind: "idle" });
+      expect(await a.sync.sync()).toMatchObject({ kind: "idle" });
+      expect(notes.filter((n) => n.includes("grow.md"))).toHaveLength(1);
+      await b.sync.sync();
+      expect(read(b, "grow.md")).toBe("small\n");
+      expect(read(b, "other.md")).toBe("still syncs\n");
+    });
   });
 
   describe("conflict policies", () => {

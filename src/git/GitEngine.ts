@@ -14,6 +14,17 @@ export interface ConflictInfo {
 
 export type Side = "ours" | "theirs";
 
+export interface FileGuard {
+  /** Sync the file, but tell the user it is big. */
+  warnBytes: number;
+  /** Keep the file out of sync entirely (hosts reject it and every later push would fail). */
+  excludeBytes: number;
+  onWarn(path: string, size: number): void;
+  onExclude(path: string, size: number): void;
+}
+
+export type RemoteRelation = "no-remote" | "related" | "unrelated";
+
 export type PushResult = { kind: "ok" } | { kind: "rejectedNonFF" };
 
 export interface RepoConfig {
@@ -51,6 +62,15 @@ export interface GitEngine {
   writeWorkFile(path: string, data: Uint8Array): Promise<void>;
   /** Commit the in-progress merge if every conflict is resolved. Returns true if a merge commit was made. */
   finishMerge(): Promise<boolean>;
+  /** Check credentials/URL without touching the vault. Throws on failure. */
+  testConnection(cfg: RepoConfig): Promise<{ branchExists: boolean }>;
+  /** Every path in HEAD. */
+  trackedFiles(): Promise<string[]>;
+  /** After fetch: does origin/<branch> share history with HEAD? */
+  relationToRemote(): Promise<RemoteRelation>;
+  setFileGuard(guard: FileGuard | undefined): void;
+  /** Never sync this path (writes .git/info/exclude, which is local to this device). */
+  excludeLocally(path: string): Promise<void>;
   /** True if remote branch has commits we don't have (after fetch). */
   isBehind(): Promise<boolean>;
 }

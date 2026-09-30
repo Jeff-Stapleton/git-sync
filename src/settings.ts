@@ -10,6 +10,7 @@ export interface GitSyncSettings {
   debounceSeconds: number;
   pullIntervalSeconds: number;
   engine: EngineChoice;
+  largeFileWarnMB: number;
 }
 
 export const DEFAULT_SETTINGS: GitSyncSettings = {
@@ -20,6 +21,7 @@ export const DEFAULT_SETTINGS: GitSyncSettings = {
   debounceSeconds: 5,
   pullIntervalSeconds: 30,
   engine: "auto",
+  largeFileWarnMB: 25,
 };
 
 export class GitSyncSettingTab extends PluginSettingTab {
@@ -51,16 +53,13 @@ export class GitSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Access token")
-      .setDesc("Personal access token with repo read/write. Never written to .git/config.")
+      .setDesc("Personal access token with repo read/write. Kept in Obsidian's per-device secret storage when available, and never written to .git/config.")
       .addText((t) => {
         t.inputEl.type = "password";
-        t.setValue(this.plugin.settings.token).onChange(async (v) => {
-          this.plugin.settings.token = v.trim();
-          await this.plugin.saveSettings();
-        });
+        t.setValue(this.plugin.getToken()).onChange((v) => void this.plugin.setToken(v.trim()));
       });
 
-    const num = (name: string, desc: string, key: "debounceSeconds" | "pullIntervalSeconds", min: number) =>
+    const num = (name: string, desc: string, key: "debounceSeconds" | "pullIntervalSeconds" | "largeFileWarnMB", min: number) =>
       new Setting(containerEl).setName(name).setDesc(desc).addText((t) =>
         t.setValue(String(this.plugin.settings[key])).onChange(async (v) => {
           const n = parseInt(v, 10);
@@ -74,6 +73,8 @@ export class GitSyncSettingTab extends PluginSettingTab {
     num("Push delay (seconds)", "Wait this long after your last edit before committing.", "debounceSeconds", 2);
     num("Pull interval (seconds)", "How often to check for remote changes.", "pullIntervalSeconds", 15);
 
+    num("Large file warning (MB)", "Warn when a synced file is this big. Files over 100 MB are never synced (git hosts reject them).", "largeFileWarnMB", 1);
+
     new Setting(containerEl)
       .setName("Git engine")
       .setDesc("Auto uses the system git on desktop and a built-in JavaScript git on mobile.")
@@ -85,6 +86,11 @@ export class GitSyncSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }),
       );
+
+    new Setting(containerEl)
+      .setName("Test connection")
+      .setDesc("Checks the URL, token and branch without changing your vault.")
+      .addButton((b) => b.setButtonText("Test").onClick(() => void this.plugin.testConnection()));
 
     new Setting(containerEl).setName("Sync now").addButton((b) =>
       b.setButtonText("Sync").setCta().onClick(() => void this.plugin.syncNow()),

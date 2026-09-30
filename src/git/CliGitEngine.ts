@@ -1,8 +1,8 @@
 import { spawn } from "child_process";
-import { mkdir, readFile, writeFile } from "fs/promises";
+import { appendFile, mkdir, readFile, stat, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import { isBinary } from "../util/markers";
-import { ConflictInfo, GitEngine, MergeResult, PushResult, RepoConfig, Side } from "./GitEngine";
+import { ConflictInfo, FileGuard, GitEngine, MergeResult, PushResult, RemoteRelation, RepoConfig, Side } from "./GitEngine";
 
 export class GitCommandError extends Error {
   constructor(public args: string[], public code: number | null, public stderr: string) {
@@ -14,6 +14,7 @@ export class GitCommandError extends Error {
 export class CliGitEngine implements GitEngine {
   readonly name = "git-cli";
   private cfg?: RepoConfig;
+  private guard?: FileGuard;
 
   constructor(private cwd: string, private gitPath = "git") {}
 
@@ -151,13 +152,87 @@ export class CliGitEngine implements GitEngine {
     return true;
   }
 
+  async testConnection(cfg: RepoConfig): Promise<{ branchExists: boolean }> {
+    this.cfg = cfg;
+    const r = await this.exec(["ls-remote", "--heads", cfg.remoteUrl]);
+    return { branchExists: r.out.split("\n").some((l) => l.trim().endsWith(`refs/heads/${cfg.branch}`)) };
+  }
+
+  async trackedFiles(): Promise<string[]> {
+    const head = await this.exec(["rev-parse", "--verify", "-q", "HEAD"], [0, 1]);
+    if (head.code !== 0) return [];
+    return (await this.exec(["ls-tree", "-r", "-z", "--name-only", "HEAD"])).out.split("\0").filter(Boolean);
+  }
+
+  async relationToRemote(): Promise<RemoteRelation> {
+    if (!(await this.hasRemoteBranch())) return "no-remote";
+    const head = await this.exec(["rev-parse", "--verify", "-q", "HEAD"], [0, 1]);
+    if (head.code !== 0) return "related"; // unborn: fast-forwards to the remote
+    const r = await this.exec(["merge-base", "HEAD", `origin/${this.cfg!.branch}`], [0, 1]);
+    return r.code === 0 ? "related" : "unrelated";
+  }
+
   async hasChanges(): Promise<boolean> {
     return (await this.exec(["status", "--porcelain"])).out.trim().length > 0;
   }
 
+  setFileGuard(guard: FileGuard | undefined): void {
+    this.guard = guard;
+  }
+
+  /** Paths git reports as changed (new, modified, renamed-to). Deleted files are included; stat fails on them. */
+  private async changedPaths(): Promise<string[]> {
+    const r = await this.exec(["status", "--porcelain", "-z", "--untracked-files=all"]);
+    const parts = r.out.split("\0");
+    const paths: string[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const e = parts[i];
+      if (e.length < 4) continue;
+      paths.push(e.slice(3));
+      if (e[0] === "R" || e[0] === "C") i++; // next field is the rename source
+    }
+    return paths;
+  }
+
+  async excludeLocally(path: string): Promise<void> {
+    const file = join(this.cwd, ".git", "info", "exclude");
+    const line = "/" + path.replace(/([*?[\\])/g, "\\$1");
+    let current = "";
+    try {
+      current = await readFile(file, "utf8");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      await mkdir(dirname(file), { recursive: true });
+    }
+    if (!current.split("\n").includes(line)) {
+      await appendFile(file, (current && !current.endsWith("\n") ? "\n" : "") + line + "\n");
+    }
+  }
+
   async commitAll(message: string): Promise<boolean> {
-    if (!(await this.hasChanges())) return false;
+    const changed = await this.changedPaths();
+    if (changed.length === 0) return false;
+    const excluded: string[] = [];
+    if (this.guard) {
+      for (const path of changed) {
+        let size: number;
+        try {
+          size = (await stat(join(this.cwd, path))).size;
+        } catch {
+          continue; // deleted
+        }
+        if (size >= this.guard.excludeBytes) {
+          await this.excludeLocally(path);
+          excluded.push(path);
+          this.guard.onExclude(path, size);
+        } else if (size >= this.guard.warnBytes) {
+          this.guard.onWarn(path, size);
+        }
+      }
+    }
     await this.exec(["add", "-A"]);
+    // A tracked file that grew past the limit is still picked up by add -A despite the exclude rule.
+    for (const path of excluded) await this.exec(["reset", "-q", "--", path], [0, 1]);
     const r = await this.exec(["commit", "-m", message], [0, 1]);
     return r.code === 0;
   }
