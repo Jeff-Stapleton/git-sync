@@ -25,7 +25,7 @@ export interface IsoGitOptions {
   dir?: string;
 }
 
-const DEFAULT_AUTHOR = { name: "Obsidian auto sync: git", email: "obsidian-git-sync@localhost" };
+const DEFAULT_AUTHOR = { name: "Auto Git Sync", email: "obsidian-git-sync@localhost" };
 const dec = (b: Uint8Array) => new TextDecoder().decode(b);
 const enc = (s: string) => new TextEncoder().encode(s);
 const parentOf = (p: string) => p.slice(0, Math.max(0, p.lastIndexOf("/")));

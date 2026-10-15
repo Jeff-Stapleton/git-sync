@@ -13,7 +13,7 @@ import { mergeGitignore } from "./util/ignore";
 import { SyncLog } from "./util/log";
 import { TokenStore } from "./util/tokenStore";
 
-const PLUGIN_NAME = "auto sync: git";
+const PLUGIN_NAME = "Auto Git Sync";
 const FOCUS_MIN_AGE_MS = 10_000;
 /** Phones: fewer wake-ups, less battery and data. */
 const MOBILE_MIN_PULL_S = 60;

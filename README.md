@@ -1,4 +1,4 @@
-# auto sync: git for Obsidian
+# Auto Git Sync for Obsidian
 
 Keeps your vault in sync across devices through a git repository, the way Obsidian Sync does:
 it commits and pushes your edits shortly after you make them and pulls other devices' changes
@@ -15,7 +15,7 @@ every 30 seconds. No buttons to press.
 *BRAT: Add a beta plugin*, and enter this repository's GitHub URL. Do this on every device.
 
 **Manually:** download `main.js`, `manifest.json` and `styles.css` from a release into
-`<vault>/.obsidian/plugins/git-sync/`, then enable *auto sync: git* in Settings → Community plugins.
+`<vault>/.obsidian/plugins/git-sync/`, then enable *Auto Git Sync* in Settings → Community plugins.
 
 ## Set up
 
@@ -23,7 +23,7 @@ every 30 seconds. No buttons to press.
 2. Create an access token that can read and write that repository.
    On GitHub: Settings → Developer settings → *Fine-grained tokens* → repository access to just this
    repo, permission **Contents: Read and write**.
-3. In *Settings → auto sync: git* enter the repository's HTTPS URL (`https://github.com/you/vault.git`),
+3. In *Settings → Auto Git Sync* enter the repository's HTTPS URL (`https://github.com/you/vault.git`),
    the branch, your token and a device name (used in commit messages).
 4. Press **Test connection**, then close the settings. The first sync starts immediately.
 
