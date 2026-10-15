@@ -8,7 +8,7 @@ export class LogModal extends Modal {
   }
 
   onOpen() {
-    this.setTitle("Git Sync log");
+    this.setTitle("auto sync: git log");
     const text = this.log.format() || "Nothing logged yet.";
     const pre = this.contentEl.createEl("pre", { text });
     pre.style.maxHeight = "50vh";
@@ -20,9 +20,9 @@ export class LogModal extends Modal {
       b.setButtonText("Copy").onClick(async () => {
         try {
           await navigator.clipboard.writeText(text);
-          new Notice("Git Sync: log copied.");
+          new Notice("auto sync: git: log copied.");
         } catch {
-          new Notice("Git Sync: couldn't access the clipboard; select the text and copy it.");
+          new Notice("auto sync: git: couldn't access the clipboard; select the text and copy it.");
         }
       }),
     );

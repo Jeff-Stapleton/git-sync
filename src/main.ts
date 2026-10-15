@@ -13,6 +13,7 @@ import { mergeGitignore } from "./util/ignore";
 import { SyncLog } from "./util/log";
 import { TokenStore } from "./util/tokenStore";
 
+const PLUGIN_NAME = "auto sync: git";
 const FOCUS_MIN_AGE_MS = 10_000;
 /** Phones: fewer wake-ups, less battery and data. */
 const MOBILE_MIN_PULL_S = 60;
@@ -45,7 +46,7 @@ export default class GitSyncPlugin extends Plugin {
     this.addCommand({ id: "resolve-conflicts", name: "Resolve conflicts", callback: () => this.openConflicts() });
     this.addCommand({ id: "show-log", name: "Show sync log", callback: () => new LogModal(this.app, this.log).open() });
     this.addCommand({ id: "open-repo", name: "Open repository in browser", callback: () => this.openRepo() });
-    this.addRibbonIcon("refresh-cw", "Git Sync: sync now", () => void this.syncNow());
+    this.addRibbonIcon("refresh-cw", `${PLUGIN_NAME}: sync now`, () => void this.syncNow());
 
     // Keep "synced 12s ago" fresh.
     this.registerInterval(window.setInterval(() => this.render(this.state), 10_000));
@@ -92,7 +93,7 @@ export default class GitSyncPlugin extends Plugin {
     }
     try {
       const engine = await this.createEngine();
-      const manager = new SyncManager(engine, () => this.settings.deviceName, (s) => this.onState(s), (m) => new Notice(`Git Sync: ${m}`, 8000), {
+      const manager = new SyncManager(engine, () => this.settings.deviceName, (s) => this.onState(s), (m) => new Notice(`${PLUGIN_NAME}: ${m}`, 8000), {
         log: this.log,
         token: () => this.getToken(),
         warnBytes: this.settings.largeFileWarnMB * MB,
@@ -142,24 +143,24 @@ export default class GitSyncPlugin extends Plugin {
 
   async syncNow() {
     if (!this.settings.remoteUrl) {
-      new Notice("Git Sync: set the origin URL in settings first.");
+      new Notice(`${PLUGIN_NAME}: set the origin URL in settings first.`);
       return;
     }
     // Paused = waiting on a decision; a fresh manager asks again.
     if (!this.scheduler || this.state.kind === "paused") await this.restart();
     await this.scheduler?.requestSync();
-    if (this.state.kind === "error") new Notice(`Git Sync: ${this.state.message}`);
+    if (this.state.kind === "error") new Notice(`${PLUGIN_NAME}: ${this.state.message}`);
   }
 
   private openConflicts() {
-    if (!this.manager) return void new Notice("Git Sync: not running. Set the origin URL in settings.");
+    if (!this.manager) return void new Notice(`${PLUGIN_NAME}: not running. Set the origin URL in settings.`);
     new ConflictModal(this.app, this.manager, () => void this.scheduler?.requestSync()).open();
   }
 
   /** Notify once when a new set of conflicts appears, then render. */
   private onState(s: SyncState) {
     if (s.kind === "conflict" && this.state.kind !== "conflict") {
-      new Notice(`Git Sync: ${s.files.length} note(s) have merge conflicts. Click the status bar to resolve.`, 10000);
+      new Notice(`${PLUGIN_NAME}: ${s.files.length} note(s) have merge conflicts. Click the status bar to resolve.`, 10000);
     }
     this.render(s);
   }
@@ -167,24 +168,24 @@ export default class GitSyncPlugin extends Plugin {
   async testConnection() {
     const { remoteUrl, branch } = this.settings;
     const token = this.getToken();
-    if (!remoteUrl) return void new Notice("Git Sync: set the origin URL first.");
+    if (!remoteUrl) return void new Notice(`${PLUGIN_NAME}: set the origin URL first.`);
     try {
       const engine = await selectEngine(this.app, this.settings.engine);
       const r = await engine.testConnection({ remoteUrl, branch, token });
       new Notice(
         r.branchExists
-          ? `Git Sync: connected. Branch "${branch}" found.`
-          : `Git Sync: connected. Branch "${branch}" doesn't exist yet; the first sync will create it.`,
+          ? `${PLUGIN_NAME}: connected. Branch "${branch}" found.`
+          : `${PLUGIN_NAME}: connected. Branch "${branch}" doesn't exist yet; the first sync will create it.`,
       );
     } catch (e) {
-      new Notice(`Git Sync: connection failed. ${friendlyError(e, token)}`, 10000);
+      new Notice(`${PLUGIN_NAME}: connection failed. ${friendlyError(e, token)}`, 10000);
     }
   }
 
   private openRepo() {
     // https://host/owner/repo(.git) -> https://host/owner/repo
     const url = this.settings.remoteUrl.replace(/\/?(\.git)?\/?$/, "");
-    if (!/^https?:\/\//.test(url)) return void new Notice("Git Sync: set an https origin URL first.");
+    if (!/^https?:\/\//.test(url)) return void new Notice(`${PLUGIN_NAME}: set an https origin URL first.`);
     window.open(url);
   }
 
@@ -192,7 +193,7 @@ export default class GitSyncPlugin extends Plugin {
     const message = friendlyError(e, this.getToken());
     this.log.error(message);
     this.render({ kind: "error", message });
-    new Notice(`Git Sync: ${message}`);
+    new Notice(`${PLUGIN_NAME}: ${message}`);
   }
 
   private render(s: SyncState) {
@@ -204,7 +205,7 @@ export default class GitSyncPlugin extends Plugin {
     el.toggleClass("is-conflict", s.kind === "conflict");
     el.title = "";
     switch (s.kind) {
-      case "idle": el.setText(this.lastSync ? `✓ synced ${ago(this.lastSync)}` : "Git Sync"); break;
+      case "idle": el.setText(this.lastSync ? `✓ synced ${ago(this.lastSync)}` : PLUGIN_NAME); break;
       case "syncing": el.setText("⟳ syncing…"); break;
       case "offline": el.setText("☁✕ offline"); break;
       case "conflict": el.setText(`⚠ ${s.files.length} conflict(s)`); el.title = s.files.join("\n"); break;

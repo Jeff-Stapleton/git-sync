@@ -1,6 +1,6 @@
 {
   "id": "git-sync",
-  "name": "Git Sync",
+  "name": "auto sync: git",
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
   "description": "Automatically commit, push and pull your vault over git, like Obsidian Sync.",
