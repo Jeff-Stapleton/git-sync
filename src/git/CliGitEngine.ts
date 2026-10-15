@@ -20,13 +20,17 @@ export class CliGitEngine implements GitEngine {
 
   /** Token is passed via env config (not argv) so it never shows in `ps` or .git/config. */
   private env(): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+    const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never", GIT_ASKPASS: "true" };
+    const config: [string, string][] = [["credential.helper", ""]];
     if (this.cfg?.token) {
       const basic = Buffer.from(`x-access-token:${this.cfg.token}`).toString("base64");
-      env.GIT_CONFIG_COUNT = "1";
-      env.GIT_CONFIG_KEY_0 = "http.extraHeader";
-      env.GIT_CONFIG_VALUE_0 = `Authorization: Basic ${basic}`;
+      config.push(["http.extraHeader", `Authorization: Basic ${basic}`]);
     }
+    env.GIT_CONFIG_COUNT = String(config.length);
+    config.forEach(([key, value], i) => {
+      env[`GIT_CONFIG_KEY_${i}`] = key;
+      env[`GIT_CONFIG_VALUE_${i}`] = value;
+    });
     return env;
   }
 

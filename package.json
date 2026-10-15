@@ -1,6 +1,6 @@
 {
   "name": "obsidian-git-sync",
-  "version": "0.1.0",
+  "version": "0.5.1",
   "description": "Automatic Obsidian vault sync over git, modeled on Obsidian Sync.",
   "main": "main.js",
   "scripts": {

@@ -1,9 +1,9 @@
 {
-  "id": "git-sync",
-  "name": "Auto Git Sync",
-  "version": "0.5.0",
-  "minAppVersion": "1.5.0",
-  "description": "Automatically commit, push and pull your vault over git, like Obsidian Sync.",
-  "author": "Jeff Stapleton",
-  "isDesktopOnly": false
+	"id": "git-sync",
+	"name": "Auto Git Sync",
+	"version": "0.5.1",
+	"minAppVersion": "1.5.0",
+	"description": "Automatically commit, push and pull your vault over git, like Obsidian Sync.",
+	"author": "Jeff Stapleton",
+	"isDesktopOnly": false
 }

@@ -33,7 +33,8 @@ export async function startRemote(token = "test-token"): Promise<TestRemote> {
   const server: Server = createServer(async (req, res) => {
     if (req.headers.authorization !== expected) {
       remote.unauthorized++;
-      res.writeHead(401, { "WWW-Authenticate": 'Basic realm="git"' }).end();
+      req.resume();
+      res.writeHead(401, { "WWW-Authenticate": 'Basic realm="git"', "Content-Length": "0", Connection: "close" }).end();
       return;
     }
     const body = await readBody(req);
