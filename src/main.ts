@@ -13,6 +13,8 @@ import { mergeGitignore } from "./util/ignore";
 import { SyncLog } from "./util/log";
 import { TokenStore } from "./util/tokenStore";
 
+type SecretStorageHost = { ["secretStorage"]?: SecretStorage };
+
 const PLUGIN_NAME = "Auto Git Sync";
 const FOCUS_MIN_AGE_MS = 10_000;
 /** Phones: fewer wake-ups, less battery and data. */
@@ -34,7 +36,8 @@ export default class GitSyncPlugin extends Plugin {
   async onload() {
     this.settings = { ...DEFAULT_SETTINGS, ...(await this.loadData()) };
     // Obsidian 1.11.4+ has per-device secret storage; older versions fall back to data.json.
-    this.tokens = new TokenStore(this.app.secretStorage as SecretStorage | undefined, this.settings);
+    const secretStorage = (this.app as unknown as SecretStorageHost)["secretStorage"];
+    this.tokens = new TokenStore(secretStorage, this.settings);
     if (this.tokens.migrate()) await this.saveSettings();
     this.addSettingTab(new GitSyncSettingTab(this.app, this));
     this.statusEl = this.addStatusBarItem();

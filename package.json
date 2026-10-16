@@ -1,7 +1,7 @@
 {
   "name": "obsidian-git-sync",
-  "version": "0.5.1",
-  "description": "Automatic Obsidian vault sync over git, modeled on Obsidian Sync.",
+  "version": "0.5.2",
+  "description": "Automatic vault sync over git.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",

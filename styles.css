@@ -1,3 +1,10 @@
 /* Auto Git Sync status bar */
 .git-sync-status { cursor: pointer; }
 .git-sync-status.is-conflict { color: var(--text-error); }
+
+.git-sync-log-output {
+	max-height: 50vh;
+	overflow: auto;
+	user-select: text;
+	white-space: pre-wrap;
+}

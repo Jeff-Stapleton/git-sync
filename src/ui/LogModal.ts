@@ -11,10 +11,7 @@ export class LogModal extends Modal {
     this.setTitle("Auto Git Sync log");
     const text = this.log.format() || "Nothing logged yet.";
     const pre = this.contentEl.createEl("pre", { text });
-    pre.style.maxHeight = "50vh";
-    pre.style.overflow = "auto";
-    pre.style.userSelect = "text";
-    pre.style.whiteSpace = "pre-wrap";
+    pre.addClass("git-sync-log-output");
     pre.scrollTop = pre.scrollHeight;
     new Setting(this.contentEl).addButton((b) =>
       b.setButtonText("Copy").onClick(async () => {
